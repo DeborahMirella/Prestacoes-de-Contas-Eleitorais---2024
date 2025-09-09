@@ -1,708 +1,519 @@
 import streamlit as st
 import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
 import sqlite3
 import os
 import gdown
+import plotly.express as px
 
-# URL e arquivos
-url = "https://drive.google.com/uc?export=download&id=1FGFxhoqU75l_9aPo6akxZjN7UNlj1Onb"
-output = "despesa_anual_2024_BRASIL.csv"
-db_file = 'database.db'
-sql_file = 'database.sql'
+# URL e nomes de arquivos
+URL_DADOS = "https://drive.google.com/uc?export=download&id=1FGFxhoqU75l_9aPo6akxZjN7UNlj1Onb"
+ARQUIVO_CSV = "despesa_anual_2024_BRASIL.csv"
+ARQUIVO_DB = 'database.db'
 
-# Função para baixar arquivo CSV
 def baixar_csv(url, output):
+    """Baixa o arquivo CSV do Google Drive."""
+    st.info("Iniciando o download do arquivo de dados. Isso pode levar um momento.")
     gdown.download(url, output, quiet=False)
     if os.path.exists(output):
-        print("Arquivo CSV baixado com sucesso!")
+        st.success("Arquivo de dados baixado com sucesso!")
         return True
-    else:
-        print(f"Falha ao baixar o arquivo: {output}")
-        return False
+    st.error(f"Falha ao baixar o arquivo: {output}")
+    return False
 
-# Função para processar o DataFrame
 def processar_dataframe(caminho_csv):
+    """Lê e limpa o arquivo CSV, retornando um DataFrame."""
     try:
         df = pd.read_csv(
-            caminho_csv,
-            encoding='ISO-8859-1',
-            sep=';', # Define o separador como ponto-e-vírgula
-            on_bad_lines='skip', # Ignora linhas com erros de formatação
-            dtype={
-                'NR_CPF_CNPJ_FORNECEDOR': str,
-                'CD_TP_DOCUMENTO': 'Int64',
-                'NM_MUNICIPIO': str,
-            },
-            na_values=["#NULO#"] # '#NULO#' será substituído por NaN (valor ausente)
+            caminho_csv, encoding='ISO-8859-1', sep=';', on_bad_lines='skip',
+            dtype={'NR_CPF_CNPJ_FORNECEDOR': str, 'CD_TP_DOCUMENTO': 'Int64', 'NM_MUNICIPIO': str},
+            na_values=["#NULO#"]
         )
-
-        # Substitui valores '-1' na coluna 'CD_MUNICIPIO' por None
         df['CD_MUNICIPIO'] = df['CD_MUNICIPIO'].replace(-1, None)
-
-        # Substitui vírgulas por pontos na coluna 'VR_PAGAMENTO' para garantir a correta interpretação caso haja valores com casas decimais
-        df['VR_PAGAMENTO'] = df['VR_PAGAMENTO'].str.replace(',', '.', regex=False)
-
-        # Converte o formato das datas para 'YYYY-MM-DD' (compatível com SQLite)
-        df['DT_PAGAMENTO'] = pd.to_datetime(
-            df['DT_PAGAMENTO'].str.strip(),
-            format='%d/%m/%Y',
-            errors='coerce' # Substitui valores inválidos por NaT (Not a Time)
-        ).dt.strftime('%Y-%m-%d')
-
-        if df.empty:
-            print("O arquivo CSV está vazio.")
-            return None
-        print("Arquivo CSV processado com sucesso!")
+        df['VR_PAGAMENTO'] = df['VR_PAGAMENTO'].str.replace(',', '.', regex=False).astype(float)
+        df['DT_PAGAMENTO'] = pd.to_datetime(df['DT_PAGAMENTO'].str.strip(), format='%d/%m/%Y', errors='coerce').dt.strftime('%Y-%m-%d')
         return df
     except Exception as e:
-        print(f"Erro ao processar o arquivo CSV: {e}")
+        st.error(f"Erro ao processar o arquivo CSV: {e}")
         return None
 
-# Função para criar tabelas SQLite
 def criar_tabelas(conn):
+    """Cria o schema do banco de dados SQLite."""
     with conn:
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.executescript('''
-            CREATE TABLE Local (
-                CD_MUNICIPIO INTEGER PRIMARY KEY,
-                NM_MUNICIPIO TEXT,
-                SG_UF TEXT
-            );
-
-            CREATE TABLE Partido (
-                SG_PARTIDO TEXT PRIMARY KEY,
-                NM_PARTIDO TEXT,
-                DS_TP_ESFERA_PARTIDARIA TEXT
-            );
-
-            CREATE TABLE Prestador (
-                NR_CNPJ_PRESTADOR_CONTA TEXT PRIMARY KEY,
-                CD_MUNICIPIO INTEGER,
-                SG_PARTIDO TEXT,
-                FOREIGN KEY (CD_MUNICIPIO) REFERENCES Local(CD_MUNICIPIO),
-                FOREIGN KEY (SG_PARTIDO) REFERENCES Partido(SG_PARTIDO)
-            );
-
-            CREATE TABLE Fornecedor (
-                NR_CPF_CNPJ_FORNECEDOR TEXT PRIMARY KEY,
-                NM_FORNECEDOR TEXT,
-                DS_TP_FORNECEDOR TEXT
-            );
-
-            CREATE TABLE Documento (
-                NR_CNPJ_PRESTADOR_CONTA TEXT NOT NULL,
-                NR_DOCUMENTO TEXT NOT NULL,
-                CD_TP_DOCUMENTO INTEGER,
-                DS_TP_DOCUMENTO TEXT,
-                PRIMARY KEY (NR_CNPJ_PRESTADOR_CONTA, NR_DOCUMENTO),
-                FOREIGN KEY (NR_CNPJ_PRESTADOR_CONTA) REFERENCES Prestador(NR_CNPJ_PRESTADOR_CONTA)
-            );
-
-            CREATE TABLE Despesa (
-                NR_CNPJ_PRESTADOR_CONTA TEXT NOT NULL,
-                NR_CPF_CNPJ_FORNECEDOR TEXT NOT NULL,
-                DT_PAGAMENTO DATE NOT NULL,
-                VR_PAGAMENTO REAL,
-                PRIMARY KEY (NR_CNPJ_PRESTADOR_CONTA, NR_CPF_CNPJ_FORNECEDOR, DT_PAGAMENTO),
-                FOREIGN KEY (NR_CNPJ_PRESTADOR_CONTA) REFERENCES Prestador(NR_CNPJ_PRESTADOR_CONTA),
-                FOREIGN KEY (NR_CPF_CNPJ_FORNECEDOR) REFERENCES Fornecedor(NR_CPF_CNPJ_FORNECEDOR)
-            );
+            CREATE TABLE IF NOT EXISTS Local ( CD_MUNICIPIO INTEGER PRIMARY KEY, NM_MUNICIPIO TEXT, SG_UF TEXT );
+            CREATE TABLE IF NOT EXISTS Partido ( SG_PARTIDO TEXT PRIMARY KEY, NM_PARTIDO TEXT, DS_TP_ESFERA_PARTIDARIA TEXT );
+            CREATE TABLE IF NOT EXISTS Prestador ( NR_CNPJ_PRESTADOR_CONTA TEXT PRIMARY KEY, CD_MUNICIPIO INTEGER, SG_PARTIDO TEXT, FOREIGN KEY (CD_MUNICIPIO) REFERENCES Local(CD_MUNICIPIO), FOREIGN KEY (SG_PARTIDO) REFERENCES Partido(SG_PARTIDO) );
+            CREATE TABLE IF NOT EXISTS Fornecedor ( NR_CPF_CNPJ_FORNECEDOR TEXT PRIMARY KEY, NM_FORNECEDOR TEXT, DS_TP_FORNECEDOR TEXT );
+            CREATE TABLE IF NOT EXISTS Documento ( NR_CNPJ_PRESTADOR_CONTA TEXT NOT NULL, NR_DOCUMENTO TEXT NOT NULL, CD_TP_DOCUMENTO INTEGER, DS_TP_DOCUMENTO TEXT, PRIMARY KEY (NR_CNPJ_PRESTADOR_CONTA, NR_DOCUMENTO), FOREIGN KEY (NR_CNPJ_PRESTADOR_CONTA) REFERENCES Prestador(NR_CNPJ_PRESTADOR_CONTA) );
+            CREATE TABLE IF NOT EXISTS Despesa ( NR_CNPJ_PRESTADOR_CONTA TEXT NOT NULL, NR_CPF_CNPJ_FORNECEDOR TEXT NOT NULL, DT_PAGAMENTO DATE NOT NULL, VR_PAGAMENTO REAL, PRIMARY KEY (NR_CNPJ_PRESTADOR_CONTA, NR_CPF_CNPJ_FORNECEDOR, DT_PAGAMENTO), FOREIGN KEY (NR_CNPJ_PRESTADOR_CONTA) REFERENCES Prestador(NR_CNPJ_PRESTADOR_CONTA), FOREIGN KEY (NR_CPF_CNPJ_FORNECEDOR) REFERENCES Fornecedor(NR_CPF_CNPJ_FORNECEDOR) );
         ''')
-        print("Tabelas criadas com sucesso!")
 
-# Função para inserir dados nas tabelas
 def inserir_dados(conn, df):
+    """Insere os dados do DataFrame nas tabelas do banco de dados."""
     try:
         with conn:
-            # Inserir dados na tabela Local
-            Local = (
-                df[['CD_MUNICIPIO', 'NM_MUNICIPIO', 'SG_UF']]
-                .drop_duplicates(subset=['CD_MUNICIPIO'])
-                .dropna(subset=['CD_MUNICIPIO']) # Remove registros com valores ausentes em 'CD_MUNICIPIO' (chave primária) e redefine os índices
-                .reset_index(drop=True) # Redefine os índices
-            )
-            Local.to_sql('Local', conn, if_exists='append', index=False)
-
-            # Inserir dados na tabela Partido
-            Partido = (
-              df[['SG_PARTIDO', 'NM_PARTIDO', 'DS_TP_ESFERA_PARTIDARIA']]
-              .drop_duplicates(subset=['SG_PARTIDO'])
-              .dropna(subset=['SG_PARTIDO'])
-              .reset_index(drop=True)
-            )
-            Partido.to_sql('Partido', conn, if_exists='append', index=False)
-
-            # Inserir dados na tabela Fornecedor
-            Fornecedor = (
-              df[['NR_CPF_CNPJ_FORNECEDOR', 'NM_FORNECEDOR', 'DS_TP_FORNECEDOR']]
-              .drop_duplicates(subset=['NR_CPF_CNPJ_FORNECEDOR'])
-              .dropna(subset=['NR_CPF_CNPJ_FORNECEDOR'])
-              .reset_index(drop=True)
-            )
-            Fornecedor.to_sql('Fornecedor', conn, if_exists='append', index=False)
-
-            # Inserir dados na tabela Prestador
-            Prestador = (
-                df[['NR_CNPJ_PRESTADOR_CONTA', 'CD_MUNICIPIO', 'SG_PARTIDO']]
-                .drop_duplicates(subset=['NR_CNPJ_PRESTADOR_CONTA'])
-                .dropna(subset=['NR_CNPJ_PRESTADOR_CONTA'])
-                .reset_index(drop=True)
-            )
-            Prestador.to_sql('Prestador', conn, if_exists='append', index=False)
-
-            # Inserir dados na tabela Documento
-            Documento = (
-              df[['NR_CNPJ_PRESTADOR_CONTA', 'NR_DOCUMENTO', 'CD_TP_DOCUMENTO', 'DS_TP_DOCUMENTO']]
-              .dropna(subset=['NR_DOCUMENTO'])
-              .dropna(subset=['NR_CNPJ_PRESTADOR_CONTA'])
-              .drop_duplicates(subset=['NR_CNPJ_PRESTADOR_CONTA', 'NR_DOCUMENTO'])
-              .reset_index(drop=True)
-            )
-            Documento.to_sql('Documento', conn, if_exists='append', index=False)
-
-            # Inserir dados na tabela Despesa
-            Despesa = (
-              df[['NR_CNPJ_PRESTADOR_CONTA', 'NR_CPF_CNPJ_FORNECEDOR', 'DT_PAGAMENTO', 'VR_PAGAMENTO']]
-                .dropna(subset=['NR_CNPJ_PRESTADOR_CONTA'])
-                .dropna(subset=['NR_CPF_CNPJ_FORNECEDOR'])
-                .dropna(subset=['DT_PAGAMENTO'])
-                .drop_duplicates(subset=['NR_CNPJ_PRESTADOR_CONTA', 'NR_CPF_CNPJ_FORNECEDOR', 'DT_PAGAMENTO'])
-                .reset_index(drop=True)
-            )
-            Despesa.to_sql('Despesa', conn, if_exists='append', index=False)
-
-            print("Dados inseridos com sucesso!")
+            df[['CD_MUNICIPIO', 'NM_MUNICIPIO', 'SG_UF']].drop_duplicates('CD_MUNICIPIO').dropna(subset=['CD_MUNICIPIO']).to_sql('Local', conn, if_exists='replace', index=False)
+            df[['SG_PARTIDO', 'NM_PARTIDO', 'DS_TP_ESFERA_PARTIDARIA']].drop_duplicates('SG_PARTIDO').dropna(subset=['SG_PARTIDO']).to_sql('Partido', conn, if_exists='replace', index=False)
+            df[['NR_CPF_CNPJ_FORNECEDOR', 'NM_FORNECEDOR', 'DS_TP_FORNECEDOR']].drop_duplicates('NR_CPF_CNPJ_FORNECEDOR').dropna(subset=['NR_CPF_CNPJ_FORNECEDOR']).to_sql('Fornecedor', conn, if_exists='replace', index=False)
+            df[['NR_CNPJ_PRESTADOR_CONTA', 'CD_MUNICIPIO', 'SG_PARTIDO']].drop_duplicates('NR_CNPJ_PRESTADOR_CONTA').dropna(subset=['NR_CNPJ_PRESTADOR_CONTA']).to_sql('Prestador', conn, if_exists='replace', index=False)
+            df[['NR_CNPJ_PRESTADOR_CONTA', 'NR_DOCUMENTO', 'CD_TP_DOCUMENTO', 'DS_TP_DOCUMENTO']].dropna(subset=['NR_DOCUMENTO', 'NR_CNPJ_PRESTADOR_CONTA']).drop_duplicates(['NR_CNPJ_PRESTADOR_CONTA', 'NR_DOCUMENTO']).to_sql('Documento', conn, if_exists='replace', index=False)
+            df[['NR_CNPJ_PRESTADOR_CONTA', 'NR_CPF_CNPJ_FORNECEDOR', 'DT_PAGAMENTO', 'VR_PAGAMENTO']].dropna().drop_duplicates(['NR_CNPJ_PRESTADOR_CONTA', 'NR_CPF_CNPJ_FORNECEDOR', 'DT_PAGAMENTO']).to_sql('Despesa', conn, if_exists='replace', index=False)
     except Exception as e:
-        print(f"Erro ao inserir dados: {e}")
+        st.error(f"Erro ao inserir dados no banco de dados: {e}")
 
-# Função para exportar o banco de dados para SQL
-def exportar_sql(conn, arquivo_sql):
-    # Criação de um dicionário com o nome das tabelas e seus dados no dataframe
-    tabelas = {
-        "Local": pd.read_sql_query("SELECT * FROM Local", conn),
-        "Partido": pd.read_sql_query("SELECT * FROM Partido", conn),
-        "Fornecedor": pd.read_sql_query("SELECT * FROM Fornecedor", conn),
-        "Prestador": pd.read_sql_query("SELECT * FROM Prestador", conn),
-        "Documento": pd.read_sql_query("SELECT * FROM Documento", conn),
-        "Despesa": pd.read_sql_query("SELECT * FROM Despesa", conn),
-    }
+@st.cache_resource
+def carregar_dados(url, csv_file, db_file):
+    """Função para baixar, processar e carregar os dados, com cache."""
+    if os.path.exists(db_file):
+         os.remove(db_file) # Garante dados sempre atualizados
+            
+    if baixar_csv(url, csv_file):
+        df = processar_dataframe(csv_file)
+        if df is not None:
+            conn = sqlite3.connect(db_file, check_same_thread=False)
+            criar_tabelas(conn)
+            inserir_dados(conn, df)
+            return conn
+    st.error("Não foi possível carregar os dados. A aplicação não pode continuar.")
+    return None
 
-    with open('database.sql', 'w', encoding='utf-8') as f:
-        # Iterar sobre cada tabela para gerar seu script SQL
-        for nome_tabela, df in tabelas.items():
-            f.write(f"-- Criação da tabela {nome_tabela}\n")
-            f.write(f"DROP TABLE IF EXISTS {nome_tabela};\n") # Comando para excluir a tabela caso já exista
-            f.write(pd.io.sql.get_schema(df, nome_tabela, con=conn)) # Obter o esquema SQL para a criação da tabela e escrever no arquivo
+conn = carregar_dados(URL_DADOS, ARQUIVO_CSV, ARQUIVO_DB)
 
-            f.write(";\n\n")
-            f.write(f"-- Dados da tabela {nome_tabela}\n")
+st.set_page_config(layout="wide")
 
-            # Iterar sobre as linhas da tabela para gerar os comandos INSERT
-            for _, row in df.iterrows():
-                valores = []
-                for x in row:
-                    if pd.isna(x):  # Se o valor for NaN, substituir por NULL
-                        valores.append("NULL")
-                    elif isinstance(x, str):  # Se for string, adicionar aspas simples
-                        valores.append("'" + x.replace("'", "''") + "'")
-                    else:  # Caso contrário, usar o valor diretamente
-                        valores.append(str(x))
-                valores_str = ", ".join(valores)
-                f.write(f"INSERT INTO {nome_tabela} VALUES ({valores_str});\n") # Escrever o comando INSERT para a linha atual
-            f.write("\n\n")
-    print("Arquivo SQL gerado com sucesso.")
+st.title("Análise Interativa de Prestações de Contas Eleitorais - 2024")
+st.markdown("Navegue pelas abas abaixo para explorar as despesas políticas sob diversas perspectivas. Use o **Painel de Controle** na barra lateral para aplicar filtros.")
 
-# Workflow principal
-if baixar_csv(url, output):
-    st.write("Arquivo CSV baixado com sucesso.")
-    df = processar_dataframe(output)
-    if df is not None:
-        if os.path.exists(db_file):
-            os.remove(db_file)
-        conn = sqlite3.connect(db_file)
-        criar_tabelas(conn)
-        inserir_dados(conn, df)
+st.sidebar.title("Painel de Controle e Filtros")
 
-# Título geral
-st.title("Prestações de contas eleitorais - 2024")
+if conn is not None:
+    tab_titles = [
+        "C1: Partidos e Fornecedores", "C2: Prestadores por UF", "C3: Despesa por Tipo Fornecedor", 
+        "C4: Prestadores por Partido (BR)", "C5: Top Municípios (Prestadores)", "C6: Gasto Médio por Partido",
+        "C7: Contratos por Partido", "C8: Maiores Despesas (Fornecedor)", "C9: Despesas em MG (Jan/24)",
+        "C10: Top Municípios (Despesa)", "Explorar Tabelas"
+    ]
+    tabs = st.tabs(tab_titles)
 
-st.text("As consultas apresentadas têm como objetivo analisar e interpretar dados relacionados a despesas e contratos políticos no Brasil, utilizando diferentes perspectivas, como partidos, fornecedores, prestadores de contas, estados e municípios")
-
-#Barra Lateral
-
-# Função para explorar tabelas genéricas
-def explorar_tabela(conn, tabela, colunas_formatar=None, formato="{:.2f}"):
-    st.subheader(f"Explorando a Tabela: {tabela}")
-    try:
-        # Obter os dados da tabela
-        query = f"SELECT * FROM {tabela}"
-        df = pd.read_sql_query(query, conn)
-        
-        if df.empty:
-            st.write(f"A tabela '{tabela}' está vazia.")
-            return
-        
-        # Slider para limitar número de linhas exibidas
-        qntd_linhas = st.sidebar.slider(
-            f"Quantas linhas deseja visualizar na tabela '{tabela}'?",
-            min_value=1,
-            max_value=min(len(df), 500),  # Limitar para até 500 registros por vez
-            value=10
+with tabs[0]:
+    st.header("Consulta 1: Partidos com Fornecedores por Faixa de Valor")
+    
+    st.sidebar.subheader("Filtros da Consulta 1") 
+    
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        valor_minimo_c1 = st.number_input(
+            "Valor Mínimo (R$)", 
+            min_value=0, 
+            max_value=100000, 
+            value=10000, 
+            step=1000
         )
-        
-        # Exibir a tabela formatada
-        if colunas_formatar:
-            st.write(df.head(qntd_linhas).style.format(subset=colunas_formatar, formatter=formato))
-        else:
-            st.write(df.head(qntd_linhas))
-        
-        # Mostrar número total de registros
-        st.write(f"Número total de registros: {len(df)}")
-    except Exception as e:
-        st.error(f"Erro ao carregar a tabela '{tabela}': {e}")
-
-# Menu da barra lateral
-st.sidebar.title("Menu de Navegação")
-opcao = st.sidebar.radio(
-    "Escolha o que deseja visualizar:",
-    ("Consulta 1", "Consulta 2", "Consulta 3", "Consulta 4", "Consulta 5", "Consulta 6", "Consulta 7", "Consulta 8", "Consulta 9", "Consulta 10", "Explorar Tabelas")
-)
-
-# Consulta 1: Análise de Partidos e Fornecedores
-if opcao == "Consulta 1":
-    st.header("Consulta 1: Análise de Partidos com Fornecedores que Receberam acima de R$10.000")
-    valor_minimo = st.slider("Escolha o valor mínimo de pagamento", min_value=0, max_value=50000, value=10000, step=1000)
+    with col2:
+        valor_maximo_c1 = st.number_input(
+            "Valor Máximo (R$)", 
+            min_value=0, 
+            max_value=100000, 
+            value=50000, 
+            step=1000
+        )
 
     query1 = """
-    SELECT
-        p.NM_PARTIDO AS Nome_Partido,
-        f.NM_FORNECEDOR AS Nome_Fornecedor,
-        dp.VR_PAGAMENTO AS Valor_Pagamento
-    FROM
-        Partido p
-        NATURAL JOIN Prestador pr
-        NATURAL JOIN Despesa dp
-        NATURAL JOIN Fornecedor f
-    WHERE
-        p.DS_TP_ESFERA_PARTIDARIA = 'Nacional'
-        AND dp.VR_PAGAMENTO > ?
+    SELECT 
+        f.NM_FORNECEDOR, 
+        dp.VR_PAGAMENTO 
+    FROM 
+        Partido p 
+        NATURAL JOIN Prestador pr 
+        NATURAL JOIN Despesa dp 
+        NATURAL JOIN Fornecedor f 
+    WHERE 
+        p.DS_TP_ESFERA_PARTIDARIA = 'Nacional' 
+        AND dp.VR_PAGAMENTO BETWEEN ? AND ?
     """
-    df1 = pd.read_sql_query(query1, conn, params=[valor_minimo])
+    
+    df1 = pd.read_sql_query(query1, conn, params=[valor_minimo_c1, valor_maximo_c1])
 
     if not df1.empty:
-        st.dataframe(df1)
-        fornecedores_mais_receberam = (
-            df1.groupby("Nome_Fornecedor")["Valor_Pagamento"]
-            .sum()
-            .sort_values(ascending=False)
-            .head(10)
+        df_grafico1 = df1.groupby("NM_FORNECEDOR")["VR_PAGAMENTO"].sum().nlargest(10).reset_index()
+        
+        fig1 = px.bar(
+            df_grafico1, 
+            y="NM_FORNECEDOR", 
+            x="VR_PAGAMENTO",
+            orientation='h', 
+            title=f"Top 10 Fornecedores com Pagamentos entre R${valor_minimo_c1:,.2f} e R${valor_maximo_c1:,.2f}",
+            labels={'VR_PAGAMENTO': 'Montante Total (R$)', 'NM_FORNECEDOR': 'Fornecedor'},
+            text_auto='.2s'
         )
+        fig1.update_layout(yaxis={'categoryorder':'total ascending'})
+        st.plotly_chart(fig1, use_container_width=True)
+        
+        with st.expander("Visualizar dados tabulares da consulta"): 
+            st.dataframe(df1)
+    else: 
+        st.warning("Nenhum dado encontrado para a faixa de valores selecionada.")
 
-        # Gráfico
-        fig, ax = plt.subplots(figsize=(12, 6))
-        fornecedores_mais_receberam.plot(kind="barh", ax=ax, edgecolor="black", color="skyblue")
-        ax.set_title("10 Fornecedores que Mais Receberam", fontsize=16)
-        ax.set_xlabel("Montante Total Recebido (R$)", fontsize=12)
-        ax.set_ylabel("Nome do Fornecedor", fontsize=12)
-        ax.grid(axis="x", linestyle="--", alpha=0.7)
-        st.pyplot(fig)
+    with tabs[1]:
+
+        st.header("Consulta 2: Análise de Prestadores por Partido e UF")
+
+        st.sidebar.subheader("Filtros da Consulta 2") 
+
+        df2_base = pd.read_sql_query("SELECT P.NM_PARTIDO, L.SG_UF FROM Prestador Pr NATURAL JOIN Partido P NATURAL JOIN Local L", conn)
+        
+        if not df2_base.empty:
+            estados_disponiveis = sorted(df2_base['SG_UF'].unique())
+            estado_selecionado = st.sidebar.selectbox("C2: Selecione o Estado", estados_disponiveis, index=estados_disponiveis.index('SP'))
+            df2_filtrado = df2_base[df2_base['SG_UF'] == estado_selecionado]
+            
+            if not df2_filtrado.empty:
+                df_grafico2 = df2_filtrado.groupby("NM_PARTIDO").size().reset_index(name='Numero_Prestadores').sort_values('Numero_Prestadores', ascending=False)
+                fig2 = px.bar(df_grafico2, x='NM_PARTIDO', y='Numero_Prestadores', title=f"Número de Prestadores por Partido em {estado_selecionado}", labels={'NM_PARTIDO': 'Partido', 'Numero_Prestadores': 'Número de Prestadores'})
+                st.plotly_chart(fig2, use_container_width=True)
+                with st.expander("Visualizar dados tabulares da consulta"): st.dataframe(df2_filtrado)
+            else: st.warning(f"Nenhum dado encontrado para o estado {estado_selecionado}.")
+        else: st.warning("Não foi possível carregar os dados para esta consulta.")
+
+
+
+with tabs[2]:
+    st.header("Consulta 3: Análise de Despesas por Tipo de Fornecedor")
+
+    st.sidebar.subheader("Filtros da Consulta 3")
+    
+    tipo_fornecedor = st.sidebar.radio(
+        "Selecione o Tipo de Fornecedor para detalhar:",
+        options=['PESSOA JURÍDICA', 'PESSOA FÍSICA'],
+        index=0  
+    )
+
+    
+    st.subheader("Visão Geral: Distribuição de Pagamentos")
+    df3_geral = pd.read_sql_query("SELECT F.DS_TP_FORNECEDOR, SUM(D.VR_PAGAMENTO) AS VR_TOTAL FROM Fornecedor F NATURAL JOIN Despesa D GROUP BY F.DS_TP_FORNECEDOR", conn)
+    if not df3_geral.empty:
+        fig3_pie = px.pie(df3_geral, names='DS_TP_FORNECEDOR', values='VR_TOTAL', title="Distribuição de Pagamentos por Tipo de Fornecedor", hole=.3)
+        st.plotly_chart(fig3_pie, use_container_width=True)
     else:
-        st.write("Nenhum dado encontrado.")
+        st.warning("Nenhum dado encontrado para a visão geral.")
 
-elif opcao == "Consulta 2":
-    st.header("Consulta 2: Análise de Prestadores por Partido (SP)")
-
-    # Criar a consulta SQL para carregar df2
-    estado = st.sidebar.selectbox("Selecione o Estado", ["SP", "MG", "RJ", "BA"], index=0)
-    query2 = f"""
-    SELECT
-        Pr.NR_CNPJ_PRESTADOR_CONTA AS CNPJ_Prestador,
-        P.NM_PARTIDO AS Nome_Partido
-    FROM
-        Prestador Pr
-        NATURAL JOIN Partido P
-        NATURAL JOIN Local L
-    WHERE
-        L.SG_UF = '{estado}'
+    
+    st.subheader(f"Top 10 Fornecedores do Tipo: {tipo_fornecedor}")
+    
+    
+    query3_detalhe = """
+        SELECT 
+            F.NM_FORNECEDOR, 
+            SUM(D.VR_PAGAMENTO) as Total_Recebido
+        FROM 
+            Fornecedor F 
+            NATURAL JOIN Despesa D
+        WHERE 
+            F.DS_TP_FORNECEDOR = ?
+        GROUP BY 
+            F.NM_FORNECEDOR
+        ORDER BY 
+            Total_Recebido DESC
+        LIMIT 10
     """
-    df2 = pd.read_sql_query(query2, conn)
+    df3_detalhe = pd.read_sql_query(query3_detalhe, conn, params=[tipo_fornecedor])
 
-    if not df2.empty:
-        # Filtro de Partido
-        partidos_disponiveis = df2["Nome_Partido"].unique()
-        partidos_selecionados = st.sidebar.multiselect(
-            "Selecione os partidos", partidos_disponiveis, default=partidos_disponiveis
+    if not df3_detalhe.empty:
+        fig3_bar = px.bar(
+            df3_detalhe,
+            x='Total_Recebido',
+            y='NM_FORNECEDOR',
+            orientation='h',
+            title=f"Top 10 Fornecedores ({tipo_fornecedor}) por Valor Recebido",
+            labels={'NM_FORNECEDOR': 'Fornecedor', 'Total_Recebido': 'Total Recebido (R$)'},
+            text_auto='.2s'
         )
+        fig3_bar.update_layout(yaxis={'categoryorder': 'total ascending'})
+        st.plotly_chart(fig3_bar, use_container_width=True)
 
-        # Filtro de CNPJ (Número de Prestadores)
-        min_prestadores = st.sidebar.slider("Número mínimo de prestadores", min_value=1, max_value=int(df2["CNPJ_Prestador"].nunique()), value=1)
-        max_prestadores = st.sidebar.slider("Número máximo de prestadores", min_value=1, max_value=int(df2["CNPJ_Prestador"].nunique()), value=20)
-
-        # Filtro para mostrar Top N Partidos
-        top_n = st.sidebar.slider("Quantos partidos deseja exibir?", min_value=1, max_value=10, value=5)
-
-        # Aplicar o filtro de número de prestadores
-        partido_prestadores = (
-            df2.groupby("Nome_Partido")["CNPJ_Prestador"].nunique().reset_index()
-        )
-        partido_prestadores.rename(columns={"CNPJ_Prestador": "Numero_Prestadores"}, inplace=True)
-
-        # Filtro para limitar Top N Partidos
-        partido_prestadores = partido_prestadores.head(top_n)
-
-        # Exibir a tabela
-        st.dataframe(df2)
-
-        # Gráfico
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.barh(
-            partido_prestadores["Nome_Partido"],
-            partido_prestadores["Numero_Prestadores"],
-            color="skyblue",
-            edgecolor="black",
-        )
-        ax.set_title(f"Número de Prestadores por Partido ({estado})", fontsize=16)
-        ax.set_xlabel("Número de Prestadores", fontsize=14)
-        ax.set_ylabel("Partido", fontsize=14)
-        st.pyplot(fig)
+        with st.expander("Visualizar dados detalhados da consulta"):
+            st.dataframe(df3_detalhe)
     else:
-        st.write("Nenhum dado encontrado.")
+        st.warning(f"Nenhum fornecedor do tipo '{tipo_fornecedor}' encontrado nos dados.")
 
 
-
-elif opcao == "Consulta 3":
-    st.header("Consulta 3: Análise de Fornecedores por Tipo e Valor de Pagamento")
-    query3 = """
-    SELECT
-        F.NM_FORNECEDOR AS Nome_Fornecedor,
-        F.DS_TP_FORNECEDOR AS Tipo_Fornecedor,
-        D.VR_PAGAMENTO AS Valor_Pagamento,
-        D.DT_PAGAMENTO AS Data_Pagamento
-    FROM
-        Fornecedor F
-        NATURAL JOIN Despesa D
-    ORDER BY
-        D.VR_PAGAMENTO DESC;
-    """
-    df3 = pd.read_sql_query(query3, conn)
-
-    if not df3.empty:
-        st.dataframe(df3)
-        fig, ax = plt.subplots(figsize=(12, 6))
-        df3.groupby("Tipo_Fornecedor")["Valor_Pagamento"].sum().plot(
-            kind="bar", ax=ax, color="skyblue", edgecolor="black"
-        )
-        ax.set_title("Total de Pagamentos por Tipo de Fornecedor", fontsize=16)
-        ax.set_xlabel("Tipo de Fornecedor", fontsize=14)
-        ax.set_ylabel("Montante Total (R$)", fontsize=14)
-        st.pyplot(fig)
-    else:
-        st.write("Nenhum dado encontrado.")
-
-elif opcao == "Consulta 4":
+with tabs[3]:
     st.header("Consulta 4: Número de Prestadores por Partido")
-    st.text("A consulta retorna uma lista de prestadores de contas com o nome do partido e a sigla do partido aos quais estão afiliados.")
+
+    st.markdown("Análise do número de prestadores de contas por partido, com filtro geográfico.")
+
+    st.sidebar.subheader("Filtros da Consulta 4")
     
-    query4 = """
-    SELECT
-        Pr.NR_CNPJ_PRESTADOR_CONTA AS CNPJ_Prestador,
-        P.NM_PARTIDO AS Nome_Partido,
-        P.SG_PARTIDO AS Sigla_Partido
-    FROM
-        Prestador Pr
-        NATURAL JOIN Partido P
-    ORDER BY
-        P.NM_PARTIDO;
-    """
-    df4 = pd.read_sql_query(query4, conn)
+    df_estados = pd.read_sql_query("SELECT DISTINCT SG_UF FROM Local ORDER BY SG_UF", conn)
+    lista_estados = df_estados['SG_UF'].tolist()
 
-    if not df4.empty:
-        st.write("### Resultados da Consulta 4")
-        st.dataframe(df4.head(20))
+    estados_selecionados = st.sidebar.multiselect(
+        "Selecione um ou mais Estados:",
+        options=lista_estados,
+        default=lista_estados  
+    )
 
-        # Gráfico do Número de Prestadores por Partido
-        partido_prestadores = df4.groupby('Sigla_Partido')['CNPJ_Prestador'].nunique().reset_index()
-        partido_prestadores.rename(columns={'CNPJ_Prestador': 'Numero_Prestadores'}, inplace=True)
-        partido_prestadores = partido_prestadores.sort_values(by='Numero_Prestadores', ascending=False)
-
-        fig4, ax4 = plt.subplots(figsize=(12, 6))
-        ax4.bar(partido_prestadores['Sigla_Partido'], partido_prestadores['Numero_Prestadores'], color="skyblue", edgecolor="black")
-        ax4.set_title('Número de Prestadores por Partido (BR)', fontsize=16)
-        ax4.set_xlabel('Partido', fontsize=14)
-        ax4.set_ylabel('Número de Prestadores', fontsize=14)
-        ax4.grid(axis="y", linestyle="--", alpha=0.7)
-        ax4.tick_params(axis='x', rotation=45)
-        st.pyplot(fig4)
+    if not estados_selecionados:
+        st.warning("Por favor, selecione ao menos um estado no painel de filtros.")
     else:
-        st.write("Nenhum dado encontrado.")
+        
+        placeholders = ', '.join('?' for _ in estados_selecionados)
+        
+        query4 = f"""
+            SELECT 
+                P.SG_PARTIDO, 
+                COUNT(Pr.NR_CNPJ_PRESTADOR_CONTA) AS Numero_Prestadores 
+            FROM 
+                Prestador Pr 
+                NATURAL JOIN Partido P 
+                NATURAL JOIN Local L
+            WHERE 
+                L.SG_UF IN ({placeholders})
+            GROUP BY 
+                P.SG_PARTIDO 
+            ORDER BY 
+                Numero_Prestadores DESC
+        """
+        
+        df4 = pd.read_sql_query(query4, conn, params=estados_selecionados)
 
-elif opcao == "Consulta 5":
-    st.header("Consulta 5: Municípios com mais prestadores")
+        if not df4.empty:
+           
+            if len(estados_selecionados) == len(lista_estados):
+                titulo_grafico = "Número de Prestadores por Partido (Brasil)"
+            elif len(estados_selecionados) > 1:
+                titulo_grafico = f"Número de Prestadores por Partido ({len(estados_selecionados)} estados selecionados)"
+            else:
+                titulo_grafico = f"Número de Prestadores por Partido ({estados_selecionados[0]})"
+
+            fig4 = px.bar(
+                df4, 
+                x='SG_PARTIDO', 
+                y='Numero_Prestadores', 
+                title=titulo_grafico, 
+                labels={'SG_PARTIDO': 'Partido', 'Numero_Prestadores': 'Número de Prestadores'}
+            )
+            st.plotly_chart(fig4, use_container_width=True)
+
+            with st.expander("Visualizar dados tabulares da consulta"):
+                st.dataframe(df4)
+        else:
+            st.warning("Nenhum dado encontrado para os filtros selecionados.")
+
+    with tabs[4]:
+
+        st.header("Consulta 5: Municípios com Maior Número de Prestadores")
+        
+        st.sidebar.subheader("Filtros da Consulta 5")
+
+        top_n_c5 = st.sidebar.slider("Quantos municípios exibir?", 5, 50, 10)
+
+        df5 = pd.read_sql_query(f"SELECT L.NM_MUNICIPIO, COUNT(Pr.NR_CNPJ_PRESTADOR_CONTA) AS n FROM Prestador Pr NATURAL JOIN Local L GROUP BY L.NM_MUNICIPIO ORDER BY n DESC LIMIT {top_n_c5}", conn)
+        if not df5.empty:
+            fig5 = px.bar(df5, x='n', y='NM_MUNICIPIO', orientation='h', title=f'Top {top_n_c5} Municípios com Mais Prestadores', labels={'NM_MUNICIPIO': 'Município', 'n': 'Número de Prestadores'})
+            fig5.update_layout(yaxis={'categoryorder':'total ascending'})
+            st.plotly_chart(fig5, use_container_width=True)
+            with st.expander("Visualizar dados tabulares"): st.dataframe(df5)
+        else: st.warning("Nenhum dado encontrado.")
+
+with tabs[5]:
+    st.header("Consulta 6: Valor Médio de Pagamento por Partido")
+
+    st.markdown("Análise da média de gastos por partido, com filtros geográficos e temporais.")
+
+    st.sidebar.subheader("Filtros da Consulta 6")
+
+    df_estados_c6 = pd.read_sql_query("SELECT DISTINCT SG_UF FROM Local ORDER BY SG_UF", conn)
+    lista_estados_c6 = df_estados_c6['SG_UF'].tolist()
     
-    query5 = """
-    SELECT
-        Pr.NR_CNPJ_PRESTADOR_CONTA AS CNPJ_Prestador,
-        L.NM_MUNICIPIO AS Nome_Municipio,
-        L.SG_UF AS Estado
-    FROM
-        Prestador Pr
-        NATURAL JOIN Local L
-    ORDER BY
-        L.NM_MUNICIPIO;
-    """
-    df5 = pd.read_sql_query(query5, conn)
+    datas_disponiveis = pd.read_sql_query("SELECT MIN(DT_PAGAMENTO) as min_date, MAX(DT_PAGAMENTO) as max_date FROM Despesa", conn)
+    min_data = pd.to_datetime(datas_disponiveis['min_date'].iloc[0])
+    max_data = pd.to_datetime(datas_disponiveis['max_date'].iloc[0])
 
-    if not df5.empty:
-        st.subheader("Tabela de Prestadores por Município")
-        st.dataframe(df5)
+    estados_selecionados_c6 = st.sidebar.multiselect(
+        "Selecione os Estados:",
+        options=lista_estados_c6,
+        default=lista_estados_c6  
+    )
 
-        municipality_counts = df5['Nome_Municipio'].value_counts()
+    data_selecionada_c6 = st.sidebar.date_input(
+        "Selecione o Período:",
+        value=(min_data, max_data),
+        min_value=min_data,
+        max_value=max_data,
+        format="DD/MM/YYYY"
+    )
 
-        # Gráfico
-        st.subheader("Gráfico: Municípios com mais prestadores")
-        top_n = 5
-        fig, ax = plt.subplots(figsize=(6, 3))
-        ax.bar(municipality_counts.index[:top_n], municipality_counts.values[:top_n], color="skyblue", edgecolor="black")
-        ax.set_xlabel('Município')
-        ax.set_ylabel('Número de Prestadores')
-        ax.set_title(f'Top {top_n} Municípios com Mais Prestadores')
-        ax.grid(axis="y", linestyle="--", alpha=0.7)
-        plt.xticks(rotation=45, ha='right')
-        st.pyplot(fig)
+    if not estados_selecionados_c6:
+        st.warning("Por favor, selecione ao menos um estado no painel de filtros.")
+    elif len(data_selecionada_c6) != 2:
+        st.warning("Por favor, selecione um intervalo de datas válido (início e fim).")
     else:
-        st.write("Nenhum dado encontrado.")
+        data_inicio, data_fim = data_selecionada_c6
+        
+        placeholders_estados = ', '.join('?' for _ in estados_selecionados_c6)
+        query6 = f"""
+            SELECT 
+                PT.SG_PARTIDO, 
+                AVG(D.VR_PAGAMENTO) AS Media_Gastos 
+            FROM 
+                Despesa D 
+                NATURAL JOIN Prestador P 
+                NATURAL JOIN Partido PT 
+                NATURAL JOIN Local L
+            WHERE 
+                L.SG_UF IN ({placeholders_estados}) 
+                AND D.DT_PAGAMENTO BETWEEN ? AND ?
+            GROUP BY 
+                PT.SG_PARTIDO 
+            ORDER BY 
+                Media_Gastos DESC
+        """
+        
+        params = estados_selecionados_c6 + [data_inicio.strftime('%Y-%m-%d'), data_fim.strftime('%Y-%m-%d')]
+        df6 = pd.read_sql_query(query6, conn, params=params)
 
-# Consulta 6: Média de gastos por partido
-elif opcao == "Consulta 6":
+        if not df6.empty:
+            titulo_grafico = f"Média de Gastos por Partido ({len(estados_selecionados_c6)} Estados)"
+            
+            fig6 = px.bar(
+                df6, 
+                x='SG_PARTIDO', 
+                y='Media_Gastos', 
+                title=titulo_grafico, 
+                labels={'SG_PARTIDO': 'Partido', 'Media_Gastos': 'Média de Gastos (R$)'}, 
+                text_auto='.2s'
+            )
+            st.plotly_chart(fig6, use_container_width=True)
 
-    st.header("Consulta 6: Média de gastos por partido")
+            with st.expander("Visualizar dados tabulares da consulta"):
+                st.dataframe(df6)
+        else:
+            st.warning("Nenhum dado encontrado para os filtros selecionados.")
 
-    query6 = """
-    SELECT
-        PT.SG_PARTIDO AS Sigla_Partido,
-        PT.NM_PARTIDO AS Nome_Partido,
-        AVG(D.VR_PAGAMENTO) AS Media_Gastos
-    FROM
-        Despesa D
-        NATURAL JOIN Prestador P
-        NATURAL JOIN Partido PT
-    GROUP BY
-        PT.SG_PARTIDO, PT.NM_PARTIDO
-    ORDER BY
-        Media_Gastos DESC;
-    """
 
-    # Executar consulta SQL
-    df6 = pd.read_sql_query(query6, conn)
+    with tabs[6]:
 
-    # Verificar se há dados
-    if not df6.empty:
-        # Exibir tabela
-        st.subheader("Tabela de Média de Gastos por Partido")
-        st.dataframe(df6)
+        st.header("Consulta 7: Quantidade de Contratos Firmados por Partido")
 
-        # Gráfico
-        st.subheader("Gráfico: Média de Gastos por Partido")
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.bar(df6['Sigla_Partido'], df6['Media_Gastos'], color="skyblue", edgecolor="black")
-        ax.set_xlabel('Partido Político', fontsize=14)
-        ax.set_ylabel('Média de Gastos (R$)', fontsize=14)
-        ax.set_title('Média de Gastos por Partido', fontsize=16)
-        ax.grid(axis="y", linestyle="--", alpha=0.7)
-        plt.xticks(rotation=45, ha='right')
-        st.pyplot(fig)
+        st.sidebar.subheader("Filtros da Consulta 7")
+
+        top_n_c7 = st.sidebar.slider("Quantos partidos exibir?", 5, 30, 10)
+        df7 = pd.read_sql_query(f"SELECT P.SG_PARTIDO, COUNT(D.NR_CPF_CNPJ_FORNECEDOR) AS n FROM Despesa D NATURAL JOIN Prestador P GROUP BY P.SG_PARTIDO ORDER BY n DESC LIMIT {top_n_c7}", conn)
+        if not df7.empty:
+            fig7 = px.bar(df7, x='n', y='SG_PARTIDO', orientation='h', title=f"Top {top_n_c7} Partidos com Mais Contratos", labels={'SG_PARTIDO': 'Partido', 'n': 'Quantidade de Contratos'})
+            fig7.update_layout(yaxis={'categoryorder':'total ascending'})
+            st.plotly_chart(fig7, use_container_width=True)
+            with st.expander("Visualizar dados tabulares"): st.dataframe(df7)
+        else: st.warning("Nenhum dado encontrado.")
+
+    with tabs[7]:
+
+        st.header("Consulta 8: Fornecedores com Maior Volume de Despesas em 2024")
+
+        st.sidebar.subheader("Filtros da Consulta 8")
+
+        top_n_c8 = st.sidebar.slider("Quantos fornecedores exibir?", 5, 50, 10)
+        df8 = pd.read_sql_query(f"SELECT F.NM_FORNECEDOR, SUM(D.VR_PAGAMENTO) AS Total FROM Despesa D NATURAL JOIN Fornecedor F WHERE D.DT_PAGAMENTO BETWEEN '2024-01-01' AND '2024-12-31' GROUP BY F.NM_FORNECEDOR ORDER BY Total DESC LIMIT {top_n_c8}", conn)
+        if not df8.empty:
+            fig8 = px.bar(df8, x='Total', y='NM_FORNECEDOR', orientation='h', title=f"Top {top_n_c8} Maiores Despesas por Fornecedor (2024)", labels={'NM_FORNECEDOR': 'Fornecedor', 'Total': 'Despesa Total (R$)'}, text_auto='.2s')
+            fig8.update_layout(yaxis={'categoryorder':'total ascending'})
+            st.plotly_chart(fig8, use_container_width=True)
+            with st.expander("Visualizar dados tabulares"): st.dataframe(df8)
+        else: st.warning("Nenhum dado encontrado.")
+
+
+with tabs[8]:
+
+    st.header("Consulta 9: Total de Despesas por Partido")
+    st.markdown("Análise de despesas partidárias, com filtros por estado e período.")
+
+    st.sidebar.subheader("Filtros da Consulta 9")
+
+    df_estados_c9 = pd.read_sql_query("SELECT DISTINCT SG_UF FROM Local ORDER BY SG_UF", conn)
+    lista_estados_c9 = df_estados_c9['SG_UF'].tolist()
+
+    default_ix_c9 = lista_estados_c9.index('MG') if 'MG' in lista_estados_c9 else 0
+    estado_selecionado_c9 = st.sidebar.selectbox(
+        "Selecione o Estado:",
+        options=lista_estados_c9,
+        index=default_ix_c9
+    )
+
+    data_selecionada_c9 = st.sidebar.date_input(
+        "Selecione o Período:",
+        value=(pd.to_datetime("2024-01-01"), pd.to_datetime("2024-01-31")),
+        format="DD/MM/YYYY"
+    )
+
+    if len(data_selecionada_c9) != 2:
+        st.warning("Por favor, selecione um intervalo de datas válido (início e fim).")
     else:
-        st.write("Nenhum dado encontrado.")
+        data_inicio_c9, data_fim_c9 = data_selecionada_c9
+        
+        query9 = """
+            SELECT 
+                Pt.NM_PARTIDO, 
+                SUM(D.VR_PAGAMENTO) AS Total_Despesas
+            FROM 
+                Despesa D 
+                NATURAL JOIN Prestador P 
+                NATURAL JOIN Local L 
+                NATURAL JOIN Partido Pt
+            WHERE 
+                L.SG_UF = ? 
+                AND D.DT_PAGAMENTO BETWEEN ? AND ?
+            GROUP BY 
+                Pt.NM_PARTIDO
+            ORDER BY 
+                Total_Despesas DESC
+        """
+        
+        params_c9 = [estado_selecionado_c9, data_inicio_c9.strftime('%Y-%m-%d'), data_fim_c9.strftime('%Y-%m-%d')]
+        df9 = pd.read_sql_query(query9, conn, params=params_c9)
 
-elif opcao == "Consulta 7":
+        if not df9.empty:
 
-    st.header("Consulta 7: Contratos por partido e município")
+            titulo_grafico = f"Total de Despesas em {estado_selecionado_c9} ({data_inicio_c9.strftime('%d/%m/%Y')} a {data_fim_c9.strftime('%d/%m/%Y')})"
+            
+            fig9 = px.bar(
+                df9, 
+                x='Total_Despesas', 
+                y='NM_PARTIDO', 
+                orientation='h', 
+                title=titulo_grafico, 
+                labels={'NM_PARTIDO': 'Partido', 'Total_Despesas': 'Total de Despesas (R$)'}
+            )
+            fig9.update_layout(yaxis={'categoryorder': 'total ascending'})
+            st.plotly_chart(fig9, use_container_width=True)
 
-    # Consulta SQL
-    query7 = """
-    SELECT
-        L.NM_MUNICIPIO AS Nome_Municipio,
-        P.SG_PARTIDO AS Sigla_Partido,
-        F.NM_FORNECEDOR AS Nome_Fornecedor,
-        COUNT(D.NR_CPF_CNPJ_FORNECEDOR) AS Quantidade_Contratos
-    FROM
-        Despesa D
-        NATURAL JOIN Prestador P
-        NATURAL JOIN Fornecedor F
-        NATURAL JOIN Local L
-    GROUP BY
-        L.NM_MUNICIPIO, P.SG_PARTIDO, F.NM_FORNECEDOR
-    ORDER BY
-        Quantidade_Contratos DESC;
-    """
+            with st.expander("Visualizar dados tabulares da consulta"):
+                st.dataframe(df9)
+        else:
+            st.warning("Nenhum dado encontrado para os filtros selecionados.")
 
-    # Executar consulta SQL
-    df7 = pd.read_sql_query(query7, conn)
+    with tabs[9]:
 
-    # Verificar se há dados
-    if not df7.empty:
-        # Exibir tabela
-        st.subheader("Tabela de Contratos por Município e Partido")
-        st.dataframe(df7)
+        st.header("Consulta 10: Municípios com Maior Total de Despesas em 2024")
 
-        # Agrupamento para análise gráfica
-        partidos = df7.groupby("Sigla_Partido")["Quantidade_Contratos"].sum().reset_index()
-        partidos = partidos.sort_values(by="Quantidade_Contratos", ascending=False)
-        top_partidos = partidos.head(10)
+        st.sidebar.subheader("Filtros da Consulta 10")
 
-        # Gráfico
-        st.subheader("Gráfico: Partidos com mais contratos")
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.barh(top_partidos["Sigla_Partido"], top_partidos["Quantidade_Contratos"], color="skyblue", edgecolor="black")
-        ax.set_xlabel("Quantidade de Contratos", fontsize=14)
-        ax.set_ylabel("Partido Político", fontsize=14)
-        ax.set_title("10 Partidos Políticos com Mais Contratos", fontsize=16)
-        ax.grid(axis="x", linestyle="--", alpha=0.7)
-        ax.invert_yaxis()  # Inverter eixo para melhor visualização
-        st.pyplot(fig)
-    else:
-        st.write("Nenhum dado encontrado.")
+        top_n_c10 = st.sidebar.slider("Quantos municípios exibir?", 3, 15, 5)
+        df10 = pd.read_sql_query(f"SELECT L.NM_MUNICIPIO, SUM(D.VR_PAGAMENTO) AS Total FROM Despesa D NATURAL JOIN Prestador P NATURAL JOIN Local L WHERE D.DT_PAGAMENTO BETWEEN '2024-01-01' AND '2024-12-31' GROUP BY L.NM_MUNICIPIO ORDER BY Total DESC LIMIT {top_n_c10}", conn)
+        if not df10.empty:
+            fig10 = px.pie(df10, values='Total', names='NM_MUNICIPIO', title=f'Distribuição de Despesas entre os Top {top_n_c10} Municípios (2024)')
+            st.plotly_chart(fig10, use_container_width=True)
+            with st.expander("Visualizar dados tabulares"): st.dataframe(df10)
+        else: st.warning("Nenhum dado encontrado.")
 
-elif opcao == "Consulta 8":
-
-    st.header("Consulta 8: Maiores despesas por fornecedor em 2024")
-
-    # Consulta SQL
-    query8 = """
-    SELECT
-        F.NM_FORNECEDOR AS Nome_Fornecedor,
-        COUNT(D.NR_CPF_CNPJ_FORNECEDOR) AS Numero_Pagamentos,
-        SUM(D.VR_PAGAMENTO) AS Total_Despesas
-    FROM
-        Despesa D
-        NATURAL JOIN Fornecedor F
-    WHERE
-        D.DT_PAGAMENTO BETWEEN '2024-01-01' AND '2024-12-31'
-    GROUP BY
-        F.NM_FORNECEDOR
-    ORDER BY
-        Total_Despesas DESC;
-    """
-
-    # Executar consulta SQL
-    df8 = pd.read_sql_query(query8, conn)
-
-    # Verificar se há dados
-    if not df8.empty:
-        # Criar coluna de despesas em milhões
-        df8['Total_Despesas_Milhoes'] = df8['Total_Despesas'] / 1_000_000
-        top_10_despesas = df8.nlargest(10, 'Total_Despesas_Milhoes')
-
-        # Exibir tabela
-        st.subheader("Tabela de Despesas por Fornecedor")
-        st.dataframe(df8)
-
-        # Gráfico
-        st.subheader("Gráfico: 10 Maiores Despesas por Fornecedor (2024)")
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.barh(top_10_despesas['Nome_Fornecedor'], top_10_despesas['Total_Despesas_Milhoes'], color="skyblue", edgecolor="black")
-        ax.set_title('10 Maiores Despesas (2024) - Milhões de R$', fontsize=16)
-        ax.set_xlabel('Despesa (Milhões de R$)', fontsize=14)
-        ax.set_ylabel('Fornecedor', fontsize=14)
-        ax.grid(axis="x", linestyle="--", alpha=0.7)
-        ax.invert_yaxis()  # Inverter eixo para melhorar a legibilidade
-        plt.tight_layout()
-        st.pyplot(fig)
-    else:
-        st.write("Nenhum dado encontrado.")
-
-elif opcao == "Consulta 9":
-
-    st.header("Consulta 9: Total de despesas por partido em MG (Jan 2024)")
-
-    # Consulta SQL
-    query9 = """
-    SELECT
-        Pt.NM_PARTIDO AS Partido,
-        SUM(D.VR_PAGAMENTO) AS Total_Despesas
-    FROM
-        Despesa D
-        NATURAL JOIN Prestador P
-        NATURAL JOIN Fornecedor F
-        NATURAL JOIN Local L
-        NATURAL JOIN Partido Pt
-    WHERE
-        D.DT_PAGAMENTO BETWEEN '2024-01-01' AND '2024-01-31' AND L.SG_UF = 'MG'
-    GROUP BY
-        Pt.NM_PARTIDO
-    ORDER BY
-        Total_Despesas DESC;
-    """
-
-    # Executar consulta SQL
-    df9 = pd.read_sql_query(query9, conn)
-
-    # Verificar se há dados
-    if not df9.empty:
-        # Exibir tabela
-        st.subheader("Tabela de Despesas por Partido (Jan 2024 - MG)")
-        st.dataframe(df9)
-
-        # Gráfico
-        st.subheader("Gráfico: Total de Despesas por Partido (Jan 2024 - MG)")
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.barh(df9['Partido'], df9['Total_Despesas'], color="lightcoral", edgecolor="black")
-        ax.set_title('Total de Despesas por Partido (Jan 2024 - MG)', fontsize=16)
-        ax.set_xlabel('Total de Despesas (R$)', fontsize=14)
-        ax.set_ylabel('Partido', fontsize=14)
-        ax.grid(axis="x", linestyle="--", alpha=0.7)
-        ax.invert_yaxis() 
-        plt.tight_layout()
-        st.pyplot(fig)
-    else:
-        st.write("Nenhum dado encontrado.")
-
-elif opcao == "Consulta 10":
-
-    st.header("Consulta 10: Municípios com maior total de despesas em 2024")
-
-    # Consulta SQL
-    query10 = """
-    SELECT
-        L.NM_MUNICIPIO AS Municipio,
-        SUM(D.VR_PAGAMENTO) AS Total_Despesas
-    FROM
-        Despesa D
-        NATURAL JOIN Prestador P
-        NATURAL JOIN Local L
-    WHERE
-        D.DT_PAGAMENTO BETWEEN '2024-01-01' AND '2024-12-31'
-    GROUP BY
-        L.NM_MUNICIPIO
-    ORDER BY
-        Total_Despesas DESC
-    LIMIT 5;
-    """
-
-    # Executar consulta SQL
-    df10 = pd.read_sql_query(query10, conn)
-
-    # Verificar se há dados
-    if not df10.empty:
-        # Exibir tabela
-        st.subheader("Tabela de Municípios com Maior Total de Despesas")
-        st.dataframe(df10)
-
-        # Gráfico
-        st.subheader("Gráfico: Distribuição de Despesas entre os 5 Municípios com Maior Total (2024)")
-        fig, ax = plt.subplots(figsize=(8, 8))
-        ax.pie(
-            df10['Total_Despesas'],
-            labels=df10['Municipio'],
-            autopct='%1.1f%%',
-            startangle=90,
-            colors=['#ff9999', '#66b3ff', '#99ff99', '#ffcc99', '#c2c2f0'],
-            pctdistance=0.85
-        )
-        ax.set_title('Distribuição de Despesas entre os 5 Municípios com Maior Total de Despesas (2024)', fontsize=16)
-        plt.axis('equal')
-        st.pyplot(fig)
-    else:
-        st.write("Nenhum dado encontrado.")
+    # --- Aba 11: Explorador de Tabelas ---
+    with tabs[10]:
+        st.header("Explorador de Tabelas do Banco de Dados")
+        tabela_selecionada = st.selectbox("Selecione uma tabela para explorar", options=['Local', 'Partido', 'Fornecedor', 'Prestador', 'Documento', 'Despesa'])
+        if tabela_selecionada:
+            df_tabela = pd.read_sql_query(f"SELECT * FROM {tabela_selecionada}", conn)
+            st.dataframe(df_tabela)
+            st.info(f"Total de registros na tabela `{tabela_selecionada}`: {len(df_tabela)}")
+        else:
+            st.error("A conexão com o banco de dados falhou. A aplicação não pode ser exibida.")
